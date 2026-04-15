@@ -79,11 +79,3 @@ PrescriptionWebApp/
    python app.py
    ```
    Open http://localhost:5000
-
-## Model Details
-
-- **Architecture:** CNN (7 conv layers) → BiLSTM (2 layers, 256 hidden) → CTC Decoder
-- **Parameters:** 8,218,822 (~32.9 MB)
-- **Input:** Grayscale 32×128 pixel images
-- **Output:** 70 character classes (69 chars + CTC blank)
-- **Training:** 39,160 word crops, 50 epochs on Google Colab (T4 GPU)
