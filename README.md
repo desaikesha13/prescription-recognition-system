@@ -65,7 +65,6 @@ PrescriptionWebApp/
    ```bash
    # Edit config/.env with your database URL and Groq API key
    DATABASE_URL=postgresql://user:pass@localhost:5433/medical_prescription
-   GROQ_API_KEY=your_key_here
    ```
 
 3. **Initialize database:**
