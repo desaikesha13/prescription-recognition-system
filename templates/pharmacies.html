@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nearby Pharmacies — Prescription Recognition</title>
+    <meta name="description" content="Find nearby pharmacies with medicine availability for your prescription.">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,1,0" rel="stylesheet">
+    <!-- Leaflet.js — FREE map library (no API key needed) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body>
+    <div class="bg-grid"></div>
+    <div class="bg-glow bg-glow-1"></div>
+    <div class="bg-glow bg-glow-2"></div>
+    <div class="bg-glow bg-glow-3"></div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay" style="display:none;">
+        <div class="loading-content">
+            <div class="loading-pulse">
+                <span class="material-symbols-rounded">local_pharmacy</span>
+            </div>
+            <h3>Searching Pharmacies<span class="loading-dots"></span></h3>
+            <p>Finding nearby stores with your medicines</p>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <span class="material-symbols-rounded logo-icon">local_pharmacy</span>
+                <div>
+                    <h1>Nearby Pharmacies</h1>
+                    <p class="subtitle">Medicine Availability Search</p>
+                </div>
+            </div>
+            <a href="/" class="btn-back">
+                <span class="material-symbols-rounded">arrow_back</span>
+                New Analysis
+            </a>
+        </header>
+
+        <!-- Prescription Summary -->
+        <div class="rx-summary glass-card">
+            <div class="rx-summary-header">
+                <span class="material-symbols-rounded">clinical_notes</span>
+                <h2>Prescription Medicines</h2>
+                <span class="rx-med-count" id="rxMedCount">{{ prescription.medicines|length }} medicines</span>
+            </div>
+            <div class="rx-med-tags" id="rxMedTags">
+                {% for med in prescription.medicines %}
+                <span class="rx-med-tag" data-medicine="{{ med.name }}">
+                    <span class="material-symbols-rounded">medication</span>
+                    {{ med.name }}
+                    {% if med.dosage %}<small>{{ med.dosage }}</small>{% endif %}
+                </span>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Location Bar -->
+        <div class="location-bar glass-card" id="locationBar">
+            <div class="location-bar-left">
+                <span class="material-symbols-rounded location-icon">location_on</span>
+                <div class="location-info">
+                    <span class="location-label">Search Area</span>
+                    <span class="location-value" id="locationValue">
+                        {% if prescription.pincode %}
+                            Pincode: {{ prescription.pincode }} (from prescription)
+                        {% else %}
+                            Enter pincode or enable location
+                        {% endif %}
+                    </span>
+                </div>
+            </div>
+            <div class="location-bar-right">
+                <div class="pincode-input-group">
+                    <input type="text" class="pincode-input" id="pincodeInput" 
+                           placeholder="Enter pincode" maxlength="6" 
+                           value="{{ prescription.pincode or '' }}"
+                           pattern="[0-9]{6}">
+                    <button class="btn-search-pincode" id="btnSearchPincode" title="Search by pincode">
+                        <span class="material-symbols-rounded">search</span>
+                    </button>
+                </div>
+                <button class="btn-location" id="btnLocation" title="Use my location">
+                    <span class="material-symbols-rounded">my_location</span>
+                    <span class="btn-location-text">Use Location</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Map Section -->
+        <div class="map-section glass-card" id="mapSection" style="display:none;">
+            <div class="map-section-header">
+                <div class="map-header-left">
+                    <span class="material-symbols-rounded">map</span>
+                    <h2>Pharmacy Map</h2>
+                </div>
+                <div class="map-header-right">
+                    <span class="map-result-count" id="mapResultCount"></span>
+                    <button class="btn-map-toggle" id="btnMapToggle" title="Toggle map">
+                        <span class="material-symbols-rounded">expand_less</span>
+                    </button>
+                </div>
+            </div>
+            <div id="pharmacyMap" class="pharmacy-map"></div>
+        </div>
+
+        <!-- Sort Controls -->
+        <div class="sort-controls" id="sortControls" style="display:none;">
+            <span class="sort-label">Sort by:</span>
+            <button class="sort-btn active" data-sort="availability" id="sortAvailability">
+                <span class="material-symbols-rounded">inventory_2</span> Availability
+            </button>
+            <button class="sort-btn" data-sort="rating" id="sortRating">
+                <span class="material-symbols-rounded">star</span> Rating
+            </button>
+            <button class="sort-btn" data-sort="distance" id="sortDistance">
+                <span class="material-symbols-rounded">near_me</span> Distance
+            </button>
+        </div>
+
+        <!-- Pharmacy Results -->
+        <div class="pharmacy-results" id="pharmacyResults"></div>
+
+        <!-- Empty State -->
+        <div class="pharmacy-empty glass-card" id="pharmacyEmpty" style="display:none;">
+            <span class="material-symbols-rounded">storefront</span>
+            <h3>No Pharmacies Found</h3>
+            <p>No medical stores found near this location. Try a different pincode or enable location.</p>
+        </div>
+
+        <!-- Initial State -->
+        <div class="pharmacy-initial glass-card" id="pharmacyInitial" {% if prescription.pincode %}style="display:none;"{% endif %}>
+            <span class="material-symbols-rounded">place</span>
+            <h3>Enter Your Location</h3>
+            <p>Enter a pincode or enable browser location to find nearby pharmacies with your prescribed medicines.</p>
+        </div>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>Intelligent Handwritten Medical Prescription Recognition & Safety Verification System</p>
+        </footer>
+    </div>
+
+    <script>
+        // ══════════════════════════════════════════════════
+        //  PHARMACY FINDER — Leaflet.js Map (FREE)
+        // ══════════════════════════════════════════════════
+
+        const prescriptionId = '{{ prescription_id }}';
+        const initialPincode = '{{ prescription.pincode or "" }}';
+        let pharmacyData = [];
+        let currentSort = 'availability';
+        let userLat = null;
+        let userLng = null;
+
+        // === Leaflet Map State ===
+        let map = null;
+        let markersLayer = null;
+        let userMarker = null;
+        let mapVisible = true;
+
+        // === DOM Elements ===
+        const pincodeInput = document.getElementById('pincodeInput');
+        const btnSearchPincode = document.getElementById('btnSearchPincode');
+        const btnLocation = document.getElementById('btnLocation');
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const pharmacyResults = document.getElementById('pharmacyResults');
+        const pharmacyEmpty = document.getElementById('pharmacyEmpty');
+        const pharmacyInitial = document.getElementById('pharmacyInitial');
+        const sortControls = document.getElementById('sortControls');
+        const locationValue = document.getElementById('locationValue');
+        const mapSection = document.getElementById('mapSection');
+
+        // === Toast System ===
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toastContainer');
+            const icons = { success: 'check_circle', error: 'error', info: 'info' };
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.innerHTML = `
+                <span class="material-symbols-rounded">${icons[type] || 'info'}</span>
+                <span>${message}</span>
+            `;
+            container.appendChild(toast);
+            setTimeout(() => toast.remove(), 3800);
+        }
+
+        // ══════════════════════════════════════════════════
+        //  LEAFLET MAP — Initialize & Markers (FREE)
+        // ══════════════════════════════════════════════════
+
+        function initMap(centerLat, centerLng) {
+            const mapDiv = document.getElementById('pharmacyMap');
+            mapSection.style.display = 'block';
+
+            // Destroy existing map if any
+            if (map) {
+                map.remove();
+                map = null;
+            }
+
+            map = L.map(mapDiv, {
+                center: [centerLat, centerLng],
+                zoom: 13,
+                zoomControl: true,
+            });
+
+            // OpenStreetMap tiles (FREE, no key needed)
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+                maxZoom: 19,
+            }).addTo(map);
+
+            // User location marker (pulsing blue dot)
+            const userIcon = L.divIcon({
+                className: 'user-location-marker',
+                html: `<div class="user-dot-outer"><div class="user-dot-inner"></div></div>`,
+                iconSize: [24, 24],
+                iconAnchor: [12, 12],
+            });
+
+            userMarker = L.marker([centerLat, centerLng], { icon: userIcon, zIndexOffset: 1000 })
+                .addTo(map)
+                .bindPopup('<strong>📍 Your Location</strong>');
+
+            // Layer group for pharmacy markers
+            markersLayer = L.layerGroup().addTo(map);
+        }
+
+        function addPharmacyMarkers(pharmacies) {
+            if (!map || !markersLayer) return;
+
+            markersLayer.clearLayers();
+            const bounds = L.latLngBounds([]);
+
+            if (userMarker) {
+                bounds.extend(userMarker.getLatLng());
+            }
+
+            pharmacies.forEach((p, idx) => {
+                if (!p.lat || !p.lng) return;
+
+                // Color based on availability
+                let color = '#ef4444'; // red
+                if (p.availability_pct >= 80) color = '#059669'; // green
+                else if (p.availability_pct >= 50) color = '#d97706'; // amber
+
+                const markerIcon = L.divIcon({
+                    className: 'pharm-map-marker',
+                    html: `<div class="pharm-marker-pin" style="background:${color};">
+                             <span>${idx + 1}</span>
+                           </div>`,
+                    iconSize: [32, 42],
+                    iconAnchor: [16, 42],
+                    popupAnchor: [0, -42],
+                });
+
+                // Build popup content
+                const statusDot = p.is_open
+                    ? '<span style="color:#059669;">● Open</span>'
+                    : '<span style="color:#ef4444;">● Closed</span>';
+
+                const medsHtml = p.medicines.map(m => {
+                    const icon = m.available === true ? '✅' : (m.available === null ? '📞' : '❌');
+                    const label = m.label || (m.available ? 'In Stock' : 'Unavailable');
+                    return `<div style="font-size:12px;padding:1px 0;">${icon} ${m.name} — <em>${label}</em></div>`;
+                }).join('');
+
+                const popupContent = `
+                    <div style="font-family:Inter,sans-serif;max-width:280px;">
+                        <div style="font-weight:700;font-size:14px;margin-bottom:2px;">${p.name}</div>
+                        <div style="font-size:11px;color:#666;margin-bottom:6px;">${p.address}</div>
+                        <div style="display:flex;gap:10px;font-size:12px;margin-bottom:6px;">
+                            <span>⭐ ${p.rating.toFixed(1)}</span>
+                            <span>📍 ~${p.distance_km} km</span>
+                            ${statusDot}
+                        </div>
+                        <div style="border-top:1px solid #eee;padding-top:6px;max-height:120px;overflow-y:auto;">
+                            ${medsHtml}
+                        </div>
+                        ${p.phone ? `<div style="margin-top:6px;font-size:12px;">📞 <a href="tel:${p.phone}">${p.phone}</a></div>` : ''}
+                    </div>
+                `;
+
+                const marker = L.marker([p.lat, p.lng], { icon: markerIcon })
+                    .bindPopup(popupContent, { maxWidth: 300 });
+
+                markersLayer.addLayer(marker);
+                bounds.extend([p.lat, p.lng]);
+
+                // Store marker reference for card click
+                p._marker = marker;
+            });
+
+            // Fit map to show all markers
+            if (bounds.isValid()) {
+                map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+            }
+
+            // Update count badge
+            const countEl = document.getElementById('mapResultCount');
+            if (countEl) countEl.textContent = `${pharmacies.length} pharmacies`;
+        }
+
+        // Map toggle
+        document.getElementById('btnMapToggle')?.addEventListener('click', () => {
+            const mapDiv = document.getElementById('pharmacyMap');
+            const icon = document.querySelector('#btnMapToggle .material-symbols-rounded');
+            mapVisible = !mapVisible;
+            mapDiv.style.display = mapVisible ? 'block' : 'none';
+            icon.textContent = mapVisible ? 'expand_less' : 'expand_more';
+            if (mapVisible && map) {
+                setTimeout(() => map.invalidateSize(), 100);
+            }
+        });
+
+        // ══════════════════════════════════════════════════
+        //  SEARCH PHARMACIES
+        // ══════════════════════════════════════════════════
+
+        async function searchPharmacies(pincode, lat = null, lng = null) {
+            if (!pincode && lat === null) {
+                showToast('Please enter a pincode or enable location', 'error');
+                return;
+            }
+            if (pincode && pincode.length < 5 && lat === null) {
+                showToast('Please enter a valid pincode', 'error');
+                return;
+            }
+
+            loadingOverlay.style.display = 'flex';
+            pharmacyResults.innerHTML = '';
+            pharmacyEmpty.style.display = 'none';
+            pharmacyInitial.style.display = 'none';
+
+            try {
+                const body = {
+                    prescription_id: prescriptionId,
+                    pincode: pincode,
+                };
+                if (lat !== null && lng !== null) {
+                    body.lat = lat;
+                    body.lng = lng;
+                }
+
+                const resp = await fetch('/api/find-pharmacies', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+
+                const data = await resp.json();
+                loadingOverlay.style.display = 'none';
+
+                if (data.error) {
+                    showToast(data.error, 'error');
+                    pharmacyEmpty.style.display = 'flex';
+                    sortControls.style.display = 'none';
+                    return;
+                }
+
+                pharmacyData = data.pharmacies || [];
+
+                if (pharmacyData.length === 0) {
+                    pharmacyEmpty.style.display = 'flex';
+                    sortControls.style.display = 'none';
+                    mapSection.style.display = 'none';
+                    showToast('No pharmacies found near this location', 'info');
+                } else {
+                    sortControls.style.display = 'flex';
+                    renderPharmacies(pharmacyData);
+                    updateMedicineTagColors(pharmacyData);
+                    showToast(`Found ${pharmacyData.length} pharmacies`, 'success');
+
+                    // Show map
+                    const centerLat = lat || data.lat || (pharmacyData[0] && pharmacyData[0].lat);
+                    const centerLng = lng || data.lng || (pharmacyData[0] && pharmacyData[0].lng);
+                    if (centerLat && centerLng) {
+                        initMap(centerLat, centerLng);
+                        addPharmacyMarkers(pharmacyData);
+                    }
+                }
+
+                locationValue.textContent = pincode
+                    ? `Pincode: ${pincode}`
+                    : `Location: ${lat?.toFixed(4)}, ${lng?.toFixed(4)}`;
+
+            } catch (err) {
+                loadingOverlay.style.display = 'none';
+                showToast('Network error. Please try again.', 'error');
+                console.error(err);
+            }
+        }
+
+        // ══════════════════════════════════════════════════
+        //  RENDER PHARMACY CARDS
+        // ══════════════════════════════════════════════════
+
+        function renderPharmacies(pharmacies) {
+            pharmacyResults.innerHTML = '';
+
+            pharmacies.forEach((p, idx) => {
+                const card = document.createElement('div');
+                card.className = 'pharm-card glass-card';
+                card.style.animationDelay = `${idx * 0.06}s`;
+
+                // Availability badge color
+                let availClass = 'avail-low';
+                if (p.availability_pct >= 80) availClass = 'avail-high';
+                else if (p.availability_pct >= 50) availClass = 'avail-mid';
+
+                // Source badge
+                const sourceBadge = p.source === 'osm'
+                    ? '<span class="pharm-source-badge source-osm">OSM Verified</span>'
+                    : (p.source === 'google'
+                        ? '<span class="pharm-source-badge source-google">Google Verified</span>'
+                        : '');
+
+                // City display
+                const cityDisplay = p.city ? ` · ${p.city}` : '';
+
+                // Medicine checklist with confidence
+                let medsHtml = '';
+                p.medicines.forEach(med => {
+                    let icon, statusText, rowClass;
+
+                    if (med.confidence === 'high' && med.available) {
+                        icon = '<span class="material-symbols-rounded med-avail-yes">check_circle</span>';
+                        statusText = med.label || 'In Stock';
+                        rowClass = 'in-stock';
+                    } else if (med.confidence === 'high' && !med.available) {
+                        icon = '<span class="material-symbols-rounded med-avail-no">cancel</span>';
+                        statusText = med.label || 'Unavailable';
+                        rowClass = 'out-of-stock';
+                    } else if (med.confidence === 'medium') {
+                        icon = '<span class="material-symbols-rounded med-avail-maybe">help</span>';
+                        statusText = med.label || 'Probably Available';
+                        rowClass = 'maybe-stock';
+                    } else {
+                        icon = '<span class="material-symbols-rounded med-avail-call">phone_in_talk</span>';
+                        statusText = med.label || 'Call to Confirm';
+                        rowClass = 'call-confirm';
+                    }
+
+                    const priceHtml = med.price ? `<span class="med-price">₹${med.price.toFixed(0)}</span>` : '';
+                    const matchHtml = med.matched_to && med.matched_to !== med.name
+                        ? `<span class="med-matched-to">→ ${med.matched_to}</span>` : '';
+
+                    medsHtml += `
+                        <div class="pharm-med-row ${rowClass}">
+                            ${icon}
+                            <span class="pharm-med-name">${med.name}</span>
+                            ${matchHtml}
+                            <span class="pharm-med-status">${statusText}</span>
+                            ${priceHtml}
+                        </div>
+                    `;
+                });
+
+                card.innerHTML = `
+                    <div class="pharm-card-header">
+                        <div class="pharm-info">
+                            <div class="pharm-name-row">
+                                <span class="pharm-marker-num">${idx + 1}</span>
+                                <h3 class="pharm-name">${p.name}</h3>
+                                <span class="pharm-status ${p.is_open ? 'open' : 'closed'}">
+                                    ${p.is_open ? 'Open' : 'Closed'}
+                                </span>
+                                ${sourceBadge}
+                            </div>
+                            <p class="pharm-address">
+                                <span class="material-symbols-rounded">location_on</span>
+                                ${p.address || 'Address not available'} ${p.pincode ? '— ' + p.pincode : ''}${cityDisplay}
+                            </p>
+                            <div class="pharm-meta">
+                                <span class="pharm-rating">
+                                    <span class="material-symbols-rounded">star</span>
+                                    ${p.rating ? p.rating.toFixed(1) : 'N/A'}
+                                </span>
+                                ${p.phone ? `<span class="pharm-phone"><span class="material-symbols-rounded">call</span> <a href="tel:${p.phone}" style="color:inherit;text-decoration:none;">${p.phone}</a></span>` : ''}
+                                <span class="pharm-distance">
+                                    <span class="material-symbols-rounded">near_me</span>
+                                    ~${p.distance_km} km
+                                </span>
+                            </div>
+                        </div>
+                        <div class="pharm-avail-badge ${availClass}">
+                            <span class="pharm-avail-pct">${p.availability_pct}%</span>
+                            <span class="pharm-avail-label">${p.matched_count}/${p.total_prescribed} medicines</span>
+                        </div>
+                    </div>
+                    <div class="pharm-med-list">
+                        <div class="pharm-med-list-header">
+                            <span class="material-symbols-rounded">medication</span>
+                            Medicine Availability
+                        </div>
+                        ${medsHtml}
+                    </div>
+                `;
+
+                // Click card → zoom to marker on map
+                card.addEventListener('click', () => {
+                    if (map && p._marker) {
+                        map.setView(p._marker.getLatLng(), 16);
+                        p._marker.openPopup();
+                        mapSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }
+                });
+
+                pharmacyResults.appendChild(card);
+            });
+        }
+
+        // ══════════════════════════════════════════════════
+        //  SORT, LOCATION, EVENTS
+        // ══════════════════════════════════════════════════
+
+        function sortPharmacies(key) {
+            currentSort = key;
+            document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
+            document.querySelector(`[data-sort="${key}"]`).classList.add('active');
+
+            let sorted = [...pharmacyData];
+            if (key === 'availability') {
+                sorted.sort((a, b) => b.availability_pct - a.availability_pct || b.rating - a.rating);
+            } else if (key === 'rating') {
+                sorted.sort((a, b) => b.rating - a.rating || b.availability_pct - a.availability_pct);
+            } else if (key === 'distance') {
+                sorted.sort((a, b) => a.distance_km - b.distance_km || b.availability_pct - a.availability_pct);
+            }
+
+            renderPharmacies(sorted);
+            updateMedicineTagColors(sorted);
+            if (map) addPharmacyMarkers(sorted);
+        }
+
+        async function useLocation() {
+            if (!navigator.geolocation) {
+                showToast('Geolocation not supported by your browser', 'error');
+                return;
+            }
+
+            btnLocation.disabled = true;
+            btnLocation.innerHTML = '<span class="spinner"></span>';
+
+            try {
+                const pos = await new Promise((resolve, reject) => {
+                    navigator.geolocation.getCurrentPosition(resolve, reject, {
+                        timeout: 10000,
+                        enableHighAccuracy: true
+                    });
+                });
+
+                const { latitude, longitude } = pos.coords;
+                userLat = latitude;
+                userLng = longitude;
+
+                // Reverse geocode to get pincode
+                const resp = await fetch('/api/location', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ lat: latitude, lng: longitude })
+                });
+
+                const data = await resp.json();
+
+                if (data.pincode) {
+                    pincodeInput.value = data.pincode;
+                    showToast(`Location detected: Pincode ${data.pincode}`, 'success');
+                    searchPharmacies(data.pincode, latitude, longitude);
+                } else {
+                    showToast('Using coordinates for search', 'info');
+                    searchPharmacies('', latitude, longitude);
+                }
+
+            } catch (err) {
+                if (err.code === 1) {
+                    showToast('Location permission denied. Please enter pincode manually.', 'error');
+                } else {
+                    showToast('Could not get location. Please enter pincode manually.', 'error');
+                }
+            } finally {
+                btnLocation.disabled = false;
+                btnLocation.innerHTML = `
+                    <span class="material-symbols-rounded">my_location</span>
+                    <span class="btn-location-text">Use Location</span>
+                `;
+            }
+        }
+
+        // === Event Listeners ===
+        btnSearchPincode.addEventListener('click', () => {
+            searchPharmacies(pincodeInput.value.trim());
+        });
+
+        pincodeInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') searchPharmacies(pincodeInput.value.trim());
+        });
+
+        btnLocation.addEventListener('click', useLocation);
+
+        document.querySelectorAll('.sort-btn').forEach(btn => {
+            btn.addEventListener('click', () => sortPharmacies(btn.dataset.sort));
+        });
+
+        // === Update Medicine Tag Colors ===
+        function updateMedicineTagColors(pharmacies) {
+            const tags = document.querySelectorAll('.rx-med-tag[data-medicine]');
+            tags.forEach(tag => {
+                const medName = tag.dataset.medicine.toLowerCase();
+                let availableAnywhere = false;
+                for (const p of pharmacies) {
+                    for (const med of p.medicines) {
+                        if (med.name.toLowerCase() === medName && med.available) {
+                            availableAnywhere = true;
+                            break;
+                        }
+                    }
+                    if (availableAnywhere) break;
+                }
+                if (availableAnywhere) {
+                    tag.classList.remove('rx-med-tag-unavailable');
+                    tag.classList.add('rx-med-tag-available');
+                } else {
+                    tag.classList.remove('rx-med-tag-available');
+                    tag.classList.add('rx-med-tag-unavailable');
+                }
+            });
+        }
+
+        // === Auto-load: geolocation on page open ===
+        async function autoLoadLocation() {
+            // 1. If prescription has pincode, use it
+            if (initialPincode && initialPincode.length >= 5) {
+                searchPharmacies(initialPincode);
+                return;
+            }
+
+            // 2. Check localStorage for cached location (faster reload)
+            const cached = localStorage.getItem('userLocation');
+            if (cached) {
+                try {
+                    const { lat, lng, pincode, ts } = JSON.parse(cached);
+                    // Use cache if less than 30 minutes old
+                    if (Date.now() - ts < 30 * 60 * 1000 && lat && lng) {
+                        userLat = lat;
+                        userLng = lng;
+                        if (pincode) pincodeInput.value = pincode;
+                        locationValue.textContent = pincode
+                            ? `Pincode: ${pincode} (auto-detected)`
+                            : `Location: ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+                        showToast('Using your saved location…', 'info');
+                        searchPharmacies(pincode || '', lat, lng);
+                        return;
+                    }
+                } catch (e) { /* ignore bad cache */ }
+            }
+
+            // 3. Auto-request geolocation (no button click needed)
+            if (!navigator.geolocation) return;
+
+            // Show subtle loading state on the location button
+            btnLocation.disabled = true;
+            btnLocation.innerHTML = '<span class="spinner"></span>';
+            locationValue.textContent = 'Detecting your location…';
+
+            try {
+                const pos = await new Promise((resolve, reject) => {
+                    navigator.geolocation.getCurrentPosition(resolve, reject, {
+                        timeout: 10000,
+                        enableHighAccuracy: true
+                    });
+                });
+
+                const { latitude, longitude } = pos.coords;
+                userLat = latitude;
+                userLng = longitude;
+
+                // Reverse geocode to get pincode
+                const resp = await fetch('/api/location', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ lat: latitude, lng: longitude })
+                });
+                const data = await resp.json();
+
+                // Cache location in localStorage
+                localStorage.setItem('userLocation', JSON.stringify({
+                    lat: latitude,
+                    lng: longitude,
+                    pincode: data.pincode || '',
+                    ts: Date.now()
+                }));
+
+                if (data.pincode) {
+                    pincodeInput.value = data.pincode;
+                    showToast(`Location detected: Pincode ${data.pincode}`, 'success');
+                    searchPharmacies(data.pincode, latitude, longitude);
+                } else {
+                    showToast('Using coordinates for search', 'info');
+                    searchPharmacies('', latitude, longitude);
+                }
+
+            } catch (err) {
+                // Permission denied or timeout → show fallback (pincode input)
+                if (err.code === 1) {
+                    showToast('Location permission denied — enter pincode manually', 'error');
+                } else {
+                    showToast('Could not detect location — enter pincode manually', 'error');
+                }
+                pharmacyInitial.style.display = 'flex';
+            } finally {
+                btnLocation.disabled = false;
+                btnLocation.innerHTML = `
+                    <span class="material-symbols-rounded">my_location</span>
+                    <span class="btn-location-text">Use Location</span>
+                `;
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', autoLoadLocation);
+    </script>
+</body>
+</html>

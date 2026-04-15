@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Results — Prescription Recognition</title>
+    <meta name="description" content="Analysis results for your handwritten prescription — verified medicine names, dosages, and confidence scores.">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,1,0" rel="stylesheet">
+</head>
+<body>
+    <div class="bg-grid"></div>
+    <div class="bg-glow bg-glow-1"></div>
+    <div class="bg-glow bg-glow-2"></div>
+    <div class="bg-glow bg-glow-3"></div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <span class="material-symbols-rounded logo-icon">medication</span>
+                <div>
+                    <h1>Analysis Results</h1>
+                    <p class="subtitle">{{ original_name }}</p>
+                </div>
+            </div>
+            <a href="/" class="btn-back">
+                <span class="material-symbols-rounded">arrow_back</span>
+                New Analysis
+            </a>
+        </header>
+
+        {% if result.error %}
+        <!-- Error State -->
+        <div class="error-card glass-card">
+            <span class="material-symbols-rounded error-icon">warning</span>
+            <h3>Analysis Error</h3>
+            <p>{{ result.error }}</p>
+            <a href="/" class="btn-analyze" style="display:inline-flex; text-decoration:none; margin-top:1rem; width:auto;">
+                <span class="material-symbols-rounded">refresh</span>
+                Try Again
+            </a>
+        </div>
+        {% else %}
+
+        <!-- Stats Bar -->
+        <div class="stats-bar">
+            <div class="stat-card glass-card">
+                <span class="stat-number">{{ result.stats.total }}</span>
+                <span class="stat-label">Found</span>
+            </div>
+            <div class="stat-card glass-card stat-accepted">
+                <span class="stat-number">{{ result.stats.accepted }}</span>
+                <span class="stat-label">Accepted</span>
+            </div>
+            <div class="stat-card glass-card stat-verified">
+                <span class="stat-number">{{ result.stats.verified }}</span>
+                <span class="stat-label">Verified</span>
+            </div>
+
+        </div>
+
+        <!-- Prescription Metadata (Doctor/Clinic/Pincode) -->
+        {% if result.doctor_name or result.clinic_address or result.pincode %}
+        <div class="rx-metadata glass-card">
+            <div class="card-header">
+                <span class="material-symbols-rounded">badge</span>
+                <h2>Prescription Details</h2>
+            </div>
+            <div class="rx-meta-grid">
+                {% if result.doctor_name %}
+                <div class="rx-meta-item">
+                    <span class="material-symbols-rounded">person</span>
+                    <div>
+                        <span class="rx-meta-label">Doctor</span>
+                        <span class="rx-meta-value">{{ result.doctor_name }}</span>
+                    </div>
+                </div>
+                {% endif %}
+                {% if result.clinic_address %}
+                <div class="rx-meta-item">
+                    <span class="material-symbols-rounded">location_on</span>
+                    <div>
+                        <span class="rx-meta-label">Clinic / Hospital</span>
+                        <span class="rx-meta-value">{{ result.clinic_address }}</span>
+                    </div>
+                </div>
+                {% endif %}
+                {% if result.pincode %}
+                <div class="rx-meta-item">
+                    <span class="material-symbols-rounded">pin_drop</span>
+                    <div>
+                        <span class="rx-meta-label">Pincode</span>
+                        <span class="rx-meta-value">{{ result.pincode }}</span>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Main Content: Image + Results -->
+        <div class="results-layout">
+            <!-- Prescription Image -->
+            <div class="image-card glass-card">
+                <div class="card-header">
+                    <span class="material-symbols-rounded">image</span>
+                    <h2>Prescription</h2>
+                </div>
+                <div class="image-wrapper">
+                    <img src="{{ url_for('uploaded_file', filename=image_file) }}" 
+                         alt="Prescription" class="prescription-img">
+                </div>
+            </div>
+
+            <!-- Medicine Results -->
+            <div class="medicines-card glass-card">
+                <div class="card-header">
+                    <span class="material-symbols-rounded">clinical_notes</span>
+                    <h2>Detected Medicines</h2>
+                </div>
+
+                {% if result.medicines %}
+                <div class="medicines-list">
+                    {% for med in result.medicines %}
+                    <div class="medicine-item" data-medicine-name="{{ med.name }}" data-index="{{ loop.index }}">
+                        <!-- Medicine Name + Final Status Badge -->
+                        <div class="med-header">
+                            <div class="med-name-group">
+                                <span class="med-number">#{{ loop.index }}</span>
+                                <h3 class="med-name" id="medName-{{ loop.index }}">{{ med.name }}</h3>
+                                {% if med.category %}
+                                <span class="category-tag">{{ med.category }}</span>
+                                {% endif %}
+                            </div>
+                            <span class="final-badge final-{{ med.final_status_class }}" data-clean-status>
+                                {{ med.final_status }}
+                            </span>
+                        </div>
+
+                        <!-- Low Confidence Warning -->
+                        {% if med.similarity < 60 %}
+                        <div class="low-confidence-warning">
+                            <span class="material-symbols-rounded">warning</span>
+                            Low confidence match — review recommended
+                        </div>
+                        {% endif %}
+
+                        <!-- Verification Details -->
+                        <div class="verification-stages">
+                            {% if med.generic_display %}
+                            <div class="stage-row">
+                                <span class="stage-label">Generic:</span>
+                                <span class="stage-value">{{ med.generic_display }}</span>
+                            </div>
+                            {% endif %}
+
+                            {% if med.dosage %}
+                            <div class="stage-row">
+                                <span class="stage-label">Dosage:</span>
+                                <span class="stage-value">{{ med.dosage }}</span>
+                            </div>
+                            {% endif %}
+
+                            {% if med.frequency %}
+                            <div class="stage-row">
+                                <span class="stage-label">Frequency:</span>
+                                <span class="stage-value">{{ med.frequency }}</span>
+                            </div>
+                            {% endif %}
+
+                            <div class="stage-row stage-crnn">
+                                <span class="stage-label">CRNN:</span>
+                                <span class="stage-value stage-na">{{ med.crnn_status }}</span>
+                            </div>
+
+                            <div class="stage-row stage-db">
+                                <span class="stage-label">Verification:</span>
+                                <span class="stage-value {% if med.status_class == 'verified' %}stage-ok{% elif med.status_class == 'likely' %}stage-ok{% elif med.status_class == 'possible' %}stage-warn{% else %}stage-fail{% endif %}" data-clean-status>{{ med.db_status }}</span>
+                            </div>
+
+                            <div class="stage-row stage-final">
+                                <span class="stage-label">▸ Result:</span>
+                                <span class="stage-value stage-result final-text-{{ med.final_status_class }}" data-clean-status>{{ med.final_status }}</span>
+                            </div>
+                        </div>
+
+                        <!-- Confidence Bar -->
+                        <div class="confidence-bar-container">
+                            <div class="confidence-label">
+                                <span>Match Confidence</span>
+                                <span class="confidence-value">{{ med.similarity }}%</span>
+                            </div>
+                            <div class="confidence-bar">
+                                <div class="confidence-fill confidence-{{ med.status_class }}" 
+                                     style="width: {{ med.similarity }}%"></div>
+                            </div>
+                        </div>
+
+                        <!-- Action Bar: Copy + Category -->
+                        <div class="med-actions-bar">
+                            <button class="btn-copy" onclick="copyMedicine(this, '{{ med.name }}', '{{ med.dosage }}', '{{ med.frequency }}')">
+                                <span class="material-symbols-rounded">content_copy</span>
+                                Copy
+                            </button>
+                        </div>
+
+                        <!-- Feedback Section -->
+                        <div class="feedback-section" id="feedback-{{ loop.index }}">
+                            <div class="feedback-buttons">
+                                <span class="feedback-label">Is this correct?</span>
+                                <button class="btn-feedback btn-correct" onclick="markFeedback({{ loop.index }}, '{{ med.name }}', true)">
+                                    ✅ Correct
+                                </button>
+                                <button class="btn-feedback btn-incorrect" onclick="markFeedback({{ loop.index }}, '{{ med.name }}', false)">
+                                    ❌ Incorrect
+                                </button>
+                            </div>
+                            <div class="correction-form" id="correctionForm-{{ loop.index }}">
+                                <input type="text" class="correction-input" id="correctionInput-{{ loop.index }}"
+                                       placeholder="Enter correct medicine name...">
+                                <button class="btn-submit-correction" onclick="submitCorrection({{ loop.index }}, '{{ med.name }}')">
+                                    <span class="material-symbols-rounded">send</span>
+                                    Submit
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+
+                {% else %}
+                <div class="empty-state">
+                    <span class="material-symbols-rounded">search_off</span>
+                    <h3>No medicines detected</h3>
+                    <p>The AI could not clearly read any medicine names from this prescription.</p>
+                </div>
+                {% endif %}
+
+                <!-- Rejected (Hallucinations) -->
+                {% if result.rejected %}
+                <div class="rejected-section">
+                    <div class="rejected-header">
+                        <span class="material-symbols-rounded">shield</span>
+                        <h3>Filtered Out ({{ result.rejected|length }})</h3>
+                    </div>
+                    <p class="rejected-desc">These names were removed by the hallucination filter:</p>
+                    <div class="rejected-list">
+                        {% for med in result.rejected %}
+                        <span class="rejected-tag">
+                            <span class="material-symbols-rounded">block</span>
+                            {{ med.name }} — <span data-clean-status>{{ med.db_status }}</span>
+                        </span>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- ═══════ Find Nearby Pharmacies CTA ═══════ -->
+        {% if result.medicines %}
+        <div class="pharmacy-cta glass-card" id="pharmacyCta">
+            <div class="pharmacy-cta-content">
+                <div class="pharmacy-cta-icon">
+                    <span class="material-symbols-rounded">local_pharmacy</span>
+                </div>
+                <div class="pharmacy-cta-text">
+                    <h3>Find Nearby Pharmacies</h3>
+                    <p>Search medical stores near you that have these medicines in stock</p>
+                </div>
+            </div>
+            <a href="/pharmacies/{{ prescription_id }}" class="btn-pharmacy" id="btnPharmacy">
+                <span class="material-symbols-rounded">search</span>
+                Search Pharmacies
+                <span class="material-symbols-rounded">arrow_forward</span>
+            </a>
+        </div>
+        {% endif %}
+
+        {% endif %}
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>Intelligent Handwritten Medical Prescription Recognition & Safety Verification System</p>
+        </footer>
+    </div>
+
+    <script>
+        // === Toast System ===
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toastContainer');
+            const icons = { success: 'check_circle', error: 'error', info: 'info' };
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.innerHTML = `
+                <span class="material-symbols-rounded">${icons[type] || 'info'}</span>
+                <span>${message}</span>
+            `;
+            container.appendChild(toast);
+            setTimeout(() => toast.remove(), 3800);
+        }
+
+        // === Copy Medicine ===
+        function copyMedicine(btn, name, dosage, frequency) {
+            let text = name;
+            if (dosage) text += ` ${dosage}`;
+            if (frequency) text += ` — ${frequency}`;
+            navigator.clipboard.writeText(text).then(() => {
+                btn.classList.add('copied');
+                btn.innerHTML = `<span class="material-symbols-rounded">check</span> Copied!`;
+                showToast('Medicine info copied to clipboard', 'success');
+                setTimeout(() => {
+                    btn.classList.remove('copied');
+                    btn.innerHTML = `<span class="material-symbols-rounded">content_copy</span> Copy`;
+                }, 2000);
+            });
+        }
+
+        // === Feedback System ===
+        const corrections = JSON.parse(localStorage.getItem('prescriptionCorrections') || '{}');
+
+        // On page load, check and apply stored corrections
+        document.addEventListener('DOMContentLoaded', () => {
+            document.querySelectorAll('.medicine-item').forEach(item => {
+                const medName = item.dataset.medicineName;
+                const idx = item.dataset.index;
+                if (corrections[medName.toLowerCase()]) {
+                    const corrected = corrections[medName.toLowerCase()];
+                    const feedbackSection = document.getElementById(`feedback-${idx}`);
+                    feedbackSection.innerHTML = `
+                        <div class="correction-applied">
+                            <span class="material-symbols-rounded">auto_fix_high</span>
+                            Previously corrected to: <strong>${corrected}</strong>
+                        </div>
+                    `;
+                }
+            });
+        });
+
+        function markFeedback(index, medicineName, isCorrect) {
+            const feedbackSection = document.getElementById(`feedback-${index}`);
+            const correctionForm = document.getElementById(`correctionForm-${index}`);
+            const buttons = feedbackSection.querySelectorAll('.btn-feedback');
+
+            // Reset all buttons
+            buttons.forEach(b => b.classList.remove('active'));
+
+            if (isCorrect) {
+                feedbackSection.querySelector('.btn-correct').classList.add('active');
+                correctionForm.classList.remove('visible');
+                showToast('Marked as correct', 'success');
+
+                // Send to backend
+                sendFeedback(medicineName, true, '');
+
+                // Show confirmed status
+                const statusEl = document.createElement('span');
+                statusEl.className = 'feedback-status feedback-confirmed';
+                statusEl.innerHTML = `<span class="material-symbols-rounded" style="font-size:0.9rem">verified</span> Confirmed`;
+                const existingStatus = feedbackSection.querySelector('.feedback-status');
+                if (existingStatus) existingStatus.remove();
+                feedbackSection.querySelector('.feedback-buttons').appendChild(statusEl);
+            } else {
+                feedbackSection.querySelector('.btn-incorrect').classList.add('active');
+                correctionForm.classList.add('visible');
+                document.getElementById(`correctionInput-${index}`).focus();
+            }
+        }
+
+        function submitCorrection(index, originalName) {
+            const input = document.getElementById(`correctionInput-${index}`);
+            const correctedName = input.value.trim();
+
+            if (!correctedName) {
+                showToast('Please enter the correct medicine name', 'error');
+                input.focus();
+                return;
+            }
+
+            // Store in localStorage
+            corrections[originalName.toLowerCase()] = correctedName;
+            localStorage.setItem('prescriptionCorrections', JSON.stringify(corrections));
+
+            // Send to backend
+            sendFeedback(originalName, false, correctedName);
+
+            // Update UI
+            const feedbackSection = document.getElementById(`feedback-${index}`);
+            feedbackSection.innerHTML = `
+                <div class="correction-applied">
+                    <span class="material-symbols-rounded">auto_fix_high</span>
+                    Corrected to: <strong>${correctedName}</strong> — saved for future predictions
+                </div>
+            `;
+
+            showToast(`Correction saved: "${originalName}" → "${correctedName}"`, 'success');
+        }
+
+        function sendFeedback(medicineName, isCorrect, correctedName) {
+            fetch('/api/feedback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    medicine_name: medicineName,
+                    is_correct: isCorrect,
+                    corrected_name: correctedName
+                })
+            }).catch(() => {
+                // Silently fail — localStorage has the data
+            });
+        }
+    </script>
+
+    <script>
+        // === Clean technical labels for non-technical users ===
+        document.addEventListener('DOMContentLoaded', () => {
+            const labelMap = [
+                // Remove DB_ prefixes and technical symbols
+                [/DB_VERIFIED\s*✓?/gi, 'Verified'],
+                [/DB_LIKELY\s*→?/gi, 'Likely Match'],
+                [/DB_POSSIBLE\s*→?/gi, 'Possible Match'],
+                [/DB_UNVERIFIED\s*✗?/gi, 'Not Verified'],
+                // Clean final status badges
+                [/✓\s*DB VERIFIED/gi, 'Verified'],
+                [/◐\s*LIKELY MATCH/gi, 'Likely Match'],
+                [/◐\s*PARTIALLY VERIFIED/gi, 'Possible Match'],
+                [/△\s*NEEDS REVIEW/gi, 'Needs Review'],
+                [/✗\s*REJECTED\s*\(hallucination\)/gi, 'Rejected'],
+                // Replace "score:" with "Confidence:"
+                [/\(score:\s*(\d+%)\)/gi, '(Confidence: $1)'],
+                [/\(sim:\s*(\d+%)\)/gi, '(Confidence: $1)'],
+                // Remove stray symbols
+                [/[✓✗◐△]/g, ''],
+            ];
+
+            document.querySelectorAll('[data-clean-status]').forEach(el => {
+                let text = el.textContent;
+                labelMap.forEach(([pattern, replacement]) => {
+                    text = text.replace(pattern, replacement);
+                });
+                el.textContent = text.trim();
+            });
+        });
+    </script>
+</body>
+</html>

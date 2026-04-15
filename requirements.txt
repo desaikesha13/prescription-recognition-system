@@ -1,0 +1,12 @@
+flask
+flask-sqlalchemy
+python-dotenv
+psycopg2-binary
+groq
+Pillow
+rapidfuzz
+jellyfish
+numpy
+torch --index-url https://download.pytorch.org/whl/cpu
+PyMuPDF
+requests
