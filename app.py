@@ -21,8 +21,15 @@ db.init_app(app)
 
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp', 'bmp', 'pdf'}
 
-GROQ_API_KEY = ""
-GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+# API key from environment (fallback to legacy hardcoded for backward compat)
+GROQ_API_KEY = os.getenv('GROQ_API_KEY', 'PUT YOUR API HERE')
+
+# Multi-model fallback chain (primary → fallback)
+GROQ_MODELS = [
+    "meta-llama/llama-4-scout-17b-16e-instruct",    # Primary
+    "meta-llama/llama-4-maverick-17b-128e-instruct", # Fallback
+]
+GROQ_MODEL = GROQ_MODELS[0]  # backward compat
 
 
 def allowed_file(filename):
@@ -157,8 +164,8 @@ def match_medicine(name):
     sim_pct = round(best['score'] * 100)
 
     if best['score'] >= 0.85:
-        status, cls = 'Verified ✓', 'verified'
-        db_st = f"DB_VERIFIED ✓ (sim: {sim_pct}%)"
+        status, cls = 'Verified', 'verified'
+        db_st = f"DB_VERIFIED (sim: {sim_pct}%)"
     elif best['score'] >= 0.70:
         status, cls = 'Likely Match', 'likely'
         db_st = f"DB_LIKELY → {best['match']} (sim: {sim_pct}%)"
@@ -167,7 +174,7 @@ def match_medicine(name):
         db_st = f"DB_POSSIBLE → {best['match']} (sim: {sim_pct}%)"
     else:
         status, cls = 'Unverified', 'unverified'
-        db_st = f"DB_UNVERIFIED ✗ (sim: {sim_pct}%)"
+        db_st = f"DB_UNVERIFIED (sim: {sim_pct}%)"
 
     return {
         'matched': best['score'] >= 0.50,
@@ -178,7 +185,7 @@ def match_medicine(name):
         'db_status_text': db_st,
     }
 
-# HALLUCINATION FILTER
+# HALLUCINATION FILTER (Multi-Signal Scoring)
 
 COMMON_WORDS = {
     'the', 'and', 'for', 'with', 'that', 'this', 'from', 'have',
@@ -187,22 +194,69 @@ COMMON_WORDS = {
     'before', 'after', 'meal', 'meals', 'times', 'once', 'twice',
     'doctor', 'patient', 'hospital', 'clinic', 'date', 'name',
     'address', 'age', 'sex', 'male', 'female', 'reg', 'dressing',
+    'tablet', 'capsule', 'syrup', 'injection', 'cream', 'ointment',
+    'drops', 'solution', 'suspension', 'powder', 'gel', 'lotion',
+    'diagnosis', 'advice', 'follow', 'rest', 'diet', 'exercise',
 }
 
 
-def is_hallucination(name, db_result, api_conf):
+def compute_hallucination_score(name, db_result, api_conf, crnn_result=None):
+    """
+    Multi-signal hallucination scoring.
+    Returns 0.0 (definitely real) to 1.0 (definitely fake).
+    """
     name_lower = name.lower().strip()
+
+    # Instant rejects
     if len(name) < 3:
-        return True
+        return 1.0
     if name_lower in COMMON_WORDS:
-        return True
-    if db_result['matched'] and db_result['similarity'] >= 0.6:
-        return False
-    if api_conf == 'high' and len(name) >= 4:
-        return False
+        return 1.0
     if name.isdigit():
-        return True
-    return False
+        return 1.0
+
+    signals = []
+
+    # Signal 1: DB similarity (strongest signal, weight=0.35)
+    db_sim = db_result.get('similarity', 0)
+    if db_sim >= 0.85:
+        signals.append(('db_strong', 0.0, 0.35))
+    elif db_sim >= 0.70:
+        signals.append(('db_likely', 0.15, 0.30))
+    elif db_sim >= 0.50:
+        signals.append(('db_weak', 0.40, 0.25))
+    else:
+        signals.append(('db_miss', 0.80, 0.30))
+
+    # Signal 2: API confidence (weight=0.25)
+    conf_map = {'high': 0.1, 'medium': 0.4, 'low': 0.7}
+    api_score = conf_map.get(api_conf, 0.5)
+    signals.append(('api_conf', api_score, 0.25))
+
+    # Signal 3: CRNN agreement (weight=0.20, if available)
+    if crnn_result and crnn_result.get('crnn_confidence', 0) > 0:
+        crnn_match = crnn_result.get('match_score', 0)
+        crnn_score = max(0, 1.0 - crnn_match)
+        signals.append(('crnn', crnn_score, 0.20))
+
+    # Signal 4: Name pattern heuristics (weight=0.15)
+    pattern_score = 0.0
+    if not re.match(r'^[A-Za-z][A-Za-z0-9 +\-\.]{1,24}$', name):
+        pattern_score = 0.6
+    if len(name) > 25:
+        pattern_score = 0.7
+    signals.append(('pattern', pattern_score, 0.15))
+
+    # Weighted combination
+    total_weight = sum(w for _, _, w in signals)
+    weighted_sum = sum(s * w for _, s, w in signals)
+    return round(weighted_sum / total_weight, 3) if total_weight > 0 else 0.5
+
+
+def is_hallucination(name, db_result, api_conf, crnn_result=None, threshold=0.55):
+    """Returns True if the hallucination score exceeds threshold."""
+    score = compute_hallucination_score(name, db_result, api_conf, crnn_result)
+    return score >= threshold
 
 def convert_pdf_to_image(pdf_path):
     try:
@@ -240,10 +294,126 @@ def clean_medicine_name(name):
     return name
 
 
+def preprocess_prescription_image(image_path):
+    """
+    Enhance prescription image for better OCR:
+    1. Enhance contrast
+    2. Sharpen blurry handwriting
+    3. Upscale if too small
+    Returns path to preprocessed image.
+    """
+    from PIL import Image as PILImage, ImageFilter, ImageEnhance
+
+    try:
+        img = PILImage.open(image_path).convert('RGB')
+
+        # Step 1: Enhance contrast
+        enhancer = ImageEnhance.Contrast(img)
+        img = enhancer.enhance(1.5)
+
+        # Step 2: Sharpen
+        img = img.filter(ImageFilter.SHARPEN)
+
+        # Step 3: Upscale small images
+        w, h = img.size
+        min_dim = 800
+        if max(w, h) < min_dim:
+            scale = min_dim / max(w, h)
+            img = img.resize((int(w * scale), int(h * scale)), PILImage.LANCZOS)
+
+        preprocessed_path = image_path.rsplit('.', 1)[0] + '_preprocessed.jpg'
+        img.save(preprocessed_path, quality=95)
+        return preprocessed_path
+    except Exception as e:
+        print(f"[PREPROCESS] Error: {e}, using original image")
+        return image_path
+
+
+def build_enhanced_prompt(brand_names_sample):
+    """
+    Build a DB-grounded prompt that includes a representative medicine list.
+    This dramatically reduces hallucinations by giving the LLM real names to match against.
+    """
+    med_list = sorted(set(brand_names_sample[:200]))
+    med_str = ", ".join(med_list)
+
+    return (
+        "You are an expert pharmacist carefully reading a handwritten medical prescription image.\n\n"
+        "STRICT RULES (follow exactly):\n"
+        "1. Extract ONLY medicine/drug names that you can CLEARLY READ in the handwriting\n"
+        "2. If you CANNOT read a word clearly, skip it — do NOT guess or make up names\n"
+        "3. Remove prefixes: Tab/Tab./Cap/Cap./Syr/Syr./Inj/Inj.\n"
+        "4. A medicine name should be a real pharmaceutical drug — not random words\n"
+        "5. PREFER matching to known Indian medicine brands when handwriting is ambiguous\n"
+        "6. For each medicine, rate your reading confidence HONESTLY:\n"
+        "   - 'high': every letter is clearly readable\n"
+        "   - 'medium': some letters are ambiguous but the word is likely correct\n"
+        "   - 'low': significant guessing involved — include anyway but mark low\n\n"
+        f"REFERENCE — Common Indian medicine brands (use to resolve ambiguous handwriting):\n"
+        f"{med_str}\n\n"
+        "ALSO extract these prescription details (if visible):\n"
+        "- doctor_name: the prescribing doctor's name (from header/stamp)\n"
+        "- clinic_address: hospital/clinic address (from header/stamp)\n"
+        "- pincode: 6-digit Indian postal code (from the address, if visible)\n\n"
+        "For EACH medicine you can clearly read, provide:\n"
+        '- "medicine_name": the drug name (just the name, no Tab/Cap prefix)\n'
+        '- "dosage": like 500mg, 250mg, 10mg. Use "" if not visible\n'
+        '- "frequency": like 1-0-1, 2+0+2, BD, TDS, OD. Use "" if not visible\n'
+        '- "confidence": "high", "medium", or "low"\n\n'
+        'If NO medicines can be clearly read, return: {"medicines": [], "doctor_name": "", "clinic_address": "", "pincode": ""}\n\n'
+        "Return ONLY valid JSON, no other text:\n"
+        '{"medicines": [{"medicine_name": "...", "dosage": "...", "frequency": "...", "confidence": "..."}],'
+        ' "doctor_name": "...", "clinic_address": "...", "pincode": "..."}'
+    )
+
+
+def _parse_api_response(raw):
+    """Parse JSON from Groq API response. Returns dict or None."""
+    if '```' in raw:
+        raw = re.sub(r'```(?:json)?\s*', '', raw).replace('```', '')
+    raw = raw.strip()
+    match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', raw, re.DOTALL)
+    if match:
+        try:
+            data = json.loads(match.group())
+
+            medicines = []
+            if 'medicines' in data:
+                for m in data['medicines']:
+                    name = clean_medicine_name(m.get('medicine_name', '') or m.get('name', ''))
+                    if name and len(name) >= 2:
+                        medicines.append({
+                            'name': name,
+                            'dosage': str(m.get('dosage', '') or '').strip(),
+                            'frequency': str(m.get('frequency', '') or '').strip(),
+                            'api_confidence': m.get('confidence', 'medium'),
+                        })
+
+            doctor_name = str(data.get('doctor_name', '') or '').strip()
+            clinic_address = str(data.get('clinic_address', '') or '').strip()
+            pincode = str(data.get('pincode', '') or '').strip()
+
+            if pincode and not re.match(r'^\d{6}$', pincode):
+                pincode = ''
+
+            return {
+                'medicines': medicines,
+                'doctor_name': doctor_name,
+                'clinic_address': clinic_address,
+                'pincode': pincode,
+            }
+        except (json.JSONDecodeError, KeyError):
+            return None
+    return None
+
+
 def call_groq_api(image_path):
     """
-    Call Groq API with enhanced prompt.
-    Extracts: medicines[], doctor_name, clinic_address, pincode.
+    Enhanced Groq API call with:
+    1. DB-grounded prompt (includes medicine reference list)
+    2. Image preprocessing (contrast + sharpen)
+    3. Multi-model fallback chain
+    4. Exponential backoff on rate limits
     Returns (result_dict, error_string).
     """
     import time as _time
@@ -256,30 +426,15 @@ def call_groq_api(image_path):
     except ImportError:
         return None, "Install dependencies: pip install groq Pillow"
 
-    prompt = (
-        "You are an expert pharmacist carefully reading a handwritten medical prescription image.\n\n"
-        "STRICT RULES (follow exactly):\n"
-        "1. Extract ONLY medicine/drug names that you can CLEARLY READ in the handwriting\n"
-        "2. If you CANNOT read a word clearly, skip it — do NOT guess or make up names\n"
-        "3. Remove prefixes: Tab/Tab./Cap/Cap./Syr/Syr./Inj/Inj.\n"
-        "4. A medicine name should be a real pharmaceutical drug — not random words\n\n"
-        "ALSO extract these prescription details (if visible):\n"
-        "- doctor_name: the prescribing doctor's name (from header/stamp)\n"
-        "- clinic_address: hospital/clinic address (from header/stamp)\n"
-        "- pincode: 6-digit Indian postal code (from the address, if visible)\n\n"
-        "For EACH medicine you can clearly read, provide:\n"
-        '- "medicine_name": the drug name (just the name, no Tab/Cap prefix)\n'
-        '- "dosage": like 500mg, 250mg, 10mg. Use "" if not visible\n'
-        '- "frequency": like 1-0-1, 2+0+2, BD, TDS, OD. Use "" if not visible\n'
-        '- "confidence": "high" if clearly readable, "medium" if partially clear\n\n'
-        'If NO medicines can be clearly read, return: {"medicines": [], "doctor_name": "", "clinic_address": "", "pincode": ""}\n\n'
-        "Return ONLY valid JSON, no other text:\n"
-        '{"medicines": [{"medicine_name": "...", "dosage": "...", "frequency": "...", "confidence": "..."}],'
-        ' "doctor_name": "...", "clinic_address": "...", "pincode": "..."}'
-    )
+    # Preprocess image for better extraction
+    processed_path = preprocess_prescription_image(image_path)
 
+    # Build DB-grounded prompt
+    prompt = build_enhanced_prompt(brand_names)
+
+    # Prepare image
     try:
-        img = PILImage.open(image_path).convert('RGB')
+        img = PILImage.open(processed_path).convert('RGB')
         w, h = img.size
         max_px = 1024
         if max(w, h) > max_px:
@@ -293,68 +448,69 @@ def call_groq_api(image_path):
 
     gc = Groq(api_key=GROQ_API_KEY)
 
-    for attempt in range(2):
-        try:
-            resp = gc.chat.completions.create(
-                model=GROQ_MODEL,
-                messages=[{'role': 'user', 'content': [
-                    {'type': 'text', 'text': prompt},
-                    {'type': 'image_url', 'image_url': {
-                        'url': f'data:image/jpeg;base64,{b64}'
-                    }}
-                ]}],
-                max_tokens=1024,
-                temperature=0.0,
-            )
+    # Try each model in fallback chain
+    for model_idx, model in enumerate(GROQ_MODELS):
+        for attempt in range(3):
+            try:
+                resp = gc.chat.completions.create(
+                    model=model,
+                    messages=[{'role': 'user', 'content': [
+                        {'type': 'text', 'text': prompt},
+                        {'type': 'image_url', 'image_url': {
+                            'url': f'data:image/jpeg;base64,{b64}'
+                        }}
+                    ]}],
+                    max_tokens=1024,
+                    temperature=0.0,
+                )
 
-            raw = resp.choices[0].message.content.strip()
+                raw = resp.choices[0].message.content.strip()
+                parsed = _parse_api_response(raw)
+                if parsed is not None:
+                    parsed['_model_used'] = model
+                    parsed['_attempt'] = attempt + 1
+                    return parsed, None
 
-            # Parse JSON
-            if '```' in raw:
-                raw = re.sub(r'```(?:json)?\s*', '', raw).replace('```', '')
-            raw = raw.strip()
-            match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', raw, re.DOTALL)
-            if match:
-                data = json.loads(match.group())
+                # If parsing failed, still return empty rather than retrying
+                return {'medicines': [], 'doctor_name': '', 'clinic_address': '', 'pincode': ''}, None
 
-                # Extract medicines
-                medicines = []
-                if 'medicines' in data:
-                    for m in data['medicines']:
-                        name = clean_medicine_name(m.get('medicine_name', '') or m.get('name', ''))
-                        if name and len(name) >= 2:
-                            medicines.append({
-                                'name': name,
-                                'dosage': str(m.get('dosage', '') or '').strip(),
-                                'frequency': str(m.get('frequency', '') or '').strip(),
-                                'api_confidence': m.get('confidence', 'medium'),
-                            })
+            except Exception as e:
+                err_str = str(e)
+                if '429' in err_str:
+                    wait = min(15 * (2 ** attempt), 120)
+                    print(f"[API] Rate limited, waiting {wait}s (attempt {attempt+1})...")
+                    _time.sleep(wait)
+                elif '503' in err_str or '500' in err_str:
+                    _time.sleep(5 * (attempt + 1))
+                else:
+                    _time.sleep(3)
 
-                # Extract prescription metadata
-                doctor_name = str(data.get('doctor_name', '') or '').strip()
-                clinic_address = str(data.get('clinic_address', '') or '').strip()
-                pincode = str(data.get('pincode', '') or '').strip()
+        if model_idx < len(GROQ_MODELS) - 1:
+            print(f"[API] Model {model} failed, trying fallback...")
 
-                # Validate pincode (must be 6-digit Indian format)
-                if pincode and not re.match(r'^\d{6}$', pincode):
-                    pincode = ''
+    return None, "All Groq models failed after retries"
 
-                return {
-                    'medicines': medicines,
-                    'doctor_name': doctor_name,
-                    'clinic_address': clinic_address,
-                    'pincode': pincode,
-                }, None
 
-            return {'medicines': [], 'doctor_name': '', 'clinic_address': '', 'pincode': ''}, None
+def compute_combined_score(db_similarity, crnn_confidence, api_confidence_str, hallucination_score):
+    """
+    Compute a final confidence score (0-100) combining all signals.
+    """
+    db_pct = db_similarity * 100
+    crnn_pct = crnn_confidence * 100 if crnn_confidence > 0 else None
 
-        except Exception as e:
-            if '429' in str(e):
-                _time.sleep(15)
-            else:
-                _time.sleep(3)
+    api_map = {'high': 90, 'medium': 60, 'low': 30}
+    api_pct = api_map.get(api_confidence_str, 50)
 
-    return None, "Groq API failed after retries"
+    hall_penalty = hallucination_score * 40
+
+    if crnn_pct is not None and crnn_pct > 0:
+        raw = (db_pct * 0.40 + crnn_pct * 0.25 + api_pct * 0.20 +
+               (100 - hall_penalty) * 0.15)
+    else:
+        raw = (db_pct * 0.50 + api_pct * 0.30 +
+               (100 - hall_penalty) * 0.20)
+
+    return max(0, min(100, round(raw)))
 
 # FULL ANALYSIS PIPELINE
 
@@ -385,14 +541,13 @@ def analyze_prescription(image_path):
                 'stats': {'total': 0, 'accepted': 0, 'rejected': 0, 'verified': 0},
                 'doctor_name': doctor_name, 'clinic_address': clinic_address, 'pincode': pincode}
 
-    # Stage 2 & 3: CRNN Validation + DB Match + Hallucination Filter
+    # Stage 2 & 3: CRNN Validation + DB Match + Multi-Signal Hallucination Filter
     accepted = []
     rejected = []
 
     for med in medicines_raw:
         db_result = match_medicine(med['name'])
         api_conf = med.get('api_confidence', 'medium')
-        hallucinated = is_hallucination(med['name'], db_result, api_conf)
 
         # Similarity percentage
         sim_pct = round(db_result['similarity'] * 100)
@@ -406,6 +561,7 @@ def analyze_prescription(image_path):
 
         # CRNN Validation (local CPU inference)
         crnn_conf_pct = 0
+        crnn_result = None
         if CRNN_READY:
             crnn_result = crnn_validator.validate(med['name'])
             crnn_status = crnn_result['status']
@@ -414,14 +570,18 @@ def analyze_prescription(image_path):
         else:
             crnn_status = 'N/A (model not loaded)'
 
+        # Multi-signal hallucination scoring
+        hall_score = compute_hallucination_score(med['name'], db_result, api_conf, crnn_result)
+        hallucinated = hall_score >= 0.55
+
         # DB status text — matching Colab format
         db_status = db_result.get('db_status_text', f'sim: {sim_pct}%')
 
-        # Combined score: blend DB similarity + CRNN confidence
-        if CRNN_READY and crnn_conf_pct > 0:
-            combined = round(sim_pct * 0.6 + crnn_conf_pct * 0.4)
-        else:
-            combined = sim_pct
+        # Improved combined scoring with all signals
+        crnn_conf_raw = crnn_result['crnn_confidence'] if crnn_result else 0
+        combined = compute_combined_score(
+            db_result['similarity'], crnn_conf_raw, api_conf, hall_score
+        )
 
         # Final status — matching Colab verdict format
         if hallucinated:
@@ -457,6 +617,7 @@ def analyze_prescription(image_path):
             'final_status': final_status,
             'final_status_class': final_status_class,
             'combined_score': combined,
+            'hallucination_score': round(hall_score, 3),
             'is_hallucination': hallucinated,
         }
 
@@ -740,15 +901,22 @@ def api_location():
 
 @app.route('/api/feedback', methods=['POST'])
 def submit_feedback():
-    """Store user feedback in PostgreSQL."""
+    """Store user feedback in PostgreSQL with enhanced tracking."""
     data = request.get_json(silent=True)
     if not data or 'medicine_name' not in data:
         return jsonify({'error': 'Missing medicine_name'}), 400
 
+    corrected = data.get('corrected_name', '')
+    is_correct = data.get('is_correct', corrected == '' or corrected == data.get('medicine_name', ''))
+
     entry = Feedback(
         image_hash=data.get('image_hash', ''),
         original_text=data.get('medicine_name', ''),
-        corrected_text=data.get('corrected_name', ''),
+        corrected_text=corrected,
+        feedback_type='confirmation' if is_correct else 'correction',
+        api_confidence=data.get('api_confidence', ''),
+        db_similarity=data.get('db_similarity'),
+        used_in_training=False,
     )
     db.session.add(entry)
     db.session.commit()
@@ -773,7 +941,53 @@ def get_feedback():
     ])
 
 
+
+# ── CRNN HOT-RELOAD ──────────────────────────────────────────
+
+def check_model_reload():
+    """Check if a new CRNN model is available and reload it."""
+    global crnn_validator, CRNN_READY
+
+    reload_flag = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        'models', 'checkpoints', '.reload_requested'
+    )
+
+    if os.path.exists(reload_flag):
+        try:
+            from crnn_engine import CRNNValidator
+            new_validator = CRNNValidator()
+            if new_validator.ready:
+                crnn_validator = new_validator
+                CRNN_READY = True
+                os.remove(reload_flag)
+                print("[CRNN] ✓ Hot-reloaded new model")
+            else:
+                print("[CRNN] ✗ New model failed to load, keeping previous")
+        except Exception as e:
+            print(f"[CRNN] Hot-reload error: {e}")
+
+
+@app.before_request
+def _before_request_hooks():
+    """Lightweight per-request checks."""
+    # Check for CRNN model hot-reload (only checks file existence, very fast)
+    check_model_reload()
+
+
+# ── SCHEDULER INITIALIZATION ─────────────────────────────────
+
+retraining_scheduler = None
+
 if __name__ == '__main__':
+    # Start retraining scheduler (only in main process, not reloader)
+    if not app.debug or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+        try:
+            from scheduler import init_scheduler
+            retraining_scheduler = init_scheduler(app)
+        except Exception as e:
+            print(f"[SCHEDULER] Init failed: {e}")
+
     print("\n" + "=" * 60)
     print("  PRESCRIPTION RECOGNITION — WEB DEMO")
     print("  Open: http://localhost:5000")
