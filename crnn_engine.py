@@ -16,16 +16,13 @@
 ==============================================================================
 """
 
+
 import os
 import json
 import numpy as np
 import torch
 import torch.nn as nn
 from PIL import Image, ImageDraw, ImageFont
-
-# ============================================================
-# MODEL ARCHITECTURE (matching notebook exactly)
-# ============================================================
 
 class CNNFeatureExtractor(nn.Module):
     def __init__(self):
@@ -234,10 +231,10 @@ class CRNNValidator:
             self.decoder = CTCDecoder(idx_to_char)
             self.ready = True
 
-            print(f"[CRNN] ✓ Model loaded ({num_classes} classes, device={self.device})")
+            print(f"[CRNN] Model loaded ({num_classes} classes, device={self.device})")
 
         except Exception as e:
-            print(f"[CRNN] ✗ Failed to load model: {e}")
+            print(f"[CRNN] Failed to load model: {e}")
             self.ready = False
 
     def validate(self, medicine_name):
