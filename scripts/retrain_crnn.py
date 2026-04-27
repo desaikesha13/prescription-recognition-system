@@ -1,15 +1,10 @@
 """
-============================================================================
  CRNN FINE-TUNING SCRIPT
-============================================================================
  Usage:
      python scripts/retrain_crnn.py --epochs 10 --fine-tune
      python scripts/retrain_crnn.py --epochs 50 --lr 0.0005
 
- Fine-tunes the existing CRNN model on the updated training dataset
- (original + feedback-generated crops). Saves the best model based
- on validation loss.
-============================================================================
+ Fine-tunes the existing CRNN model on the updated training dataset Saves the best model based on validation loss.
 """
 import argparse
 import os
@@ -29,9 +24,6 @@ from crnn_engine import CRNN
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHECKPOINT_DIR = os.path.join(BASE_DIR, 'models', 'checkpoints')
 DATASET_DIR = os.path.join(BASE_DIR, 'models', 'dataset')
-
-
-# ── Dataset ───────────────────────────────────────────────────
 
 class WordCropDataset(Dataset):
     """Dataset of word crop images with text labels."""
@@ -68,20 +60,14 @@ class WordCropDataset(Dataset):
 
 
 def collate_fn(batch):
-    """CTC-compatible collation: pad targets, stack images."""
     images, targets, lengths = zip(*batch)
     images = torch.stack(images)
     targets = torch.cat(targets)
     lengths = torch.IntTensor(list(lengths))
     return images, targets, lengths
 
-
-# ── Training Loop ─────────────────────────────────────────────
-
 def retrain(epochs=10, lr=0.0001, fine_tune=True, batch_size=32):
-    print("=" * 60)
     print("  CRNN RETRAINING")
-    print("=" * 60)
 
     # Load metadata
     meta_path = os.path.join(DATASET_DIR, 'dataset_metadata.json')
@@ -105,7 +91,6 @@ def retrain(epochs=10, lr=0.0001, fine_tune=True, batch_size=32):
     print(f"  LR: {lr}")
     print(f"  Fine-tune: {fine_tune}")
 
-    # Load model
     model = CRNN(num_classes, lstm_hidden=256, lstm_layers=2, dropout=0.1).to(device)
 
     if fine_tune:
@@ -143,7 +128,6 @@ def retrain(epochs=10, lr=0.0001, fine_tune=True, batch_size=32):
             collate_fn=collate_fn, num_workers=0
         )
 
-    # Training setup
     criterion = nn.CTCLoss(blank=0, zero_infinity=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -179,7 +163,6 @@ def retrain(epochs=10, lr=0.0001, fine_tune=True, batch_size=32):
 
         avg_train_loss = total_loss / max(batch_count, 1)
 
-        # ── Validate ──
         avg_val_loss = None
         if val_loader:
             model.eval()
@@ -208,7 +191,6 @@ def retrain(epochs=10, lr=0.0001, fine_tune=True, batch_size=32):
                 val_str += " ★ BEST"
         else:
             val_str = "Val: N/A"
-            # Without validation, save every improvement in train loss
             if avg_train_loss < best_val_loss:
                 best_val_loss = avg_train_loss
                 save_path = os.path.join(CHECKPOINT_DIR, 'crnn_best.pth')
@@ -217,7 +199,6 @@ def retrain(epochs=10, lr=0.0001, fine_tune=True, batch_size=32):
 
         print(f"  Epoch {epoch+1:3d}/{epochs} | Train: {avg_train_loss:.4f} | {val_str}")
 
-    # ── Save latest ──
     latest_path = os.path.join(CHECKPOINT_DIR, 'crnn_latest.pth')
     torch.save(model.state_dict(), latest_path)
 
