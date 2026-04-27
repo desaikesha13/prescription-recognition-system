@@ -1,14 +1,11 @@
 """
-============================================================================
  MODEL ROLLBACK — Restore a previous CRNN model version
-============================================================================
  Usage:
      python scripts/rollback_model.py                    # rollback to previous
      python scripts/rollback_model.py crnn_20260424.pth  # rollback to specific
 
  Lists available versions and restores the selected one.
  Sets the hot-reload flag so the running app picks it up.
-============================================================================
 """
 import os
 import sys
@@ -43,12 +40,6 @@ def list_versions():
 
 
 def rollback(version_file=None):
-    """
-    Rollback to a previous model version.
-
-    Args:
-        version_file: Filename or full path. If None, uses second-to-last version.
-    """
     print("=" * 60)
     print("  CRNN MODEL ROLLBACK")
     print("=" * 60)
@@ -96,8 +87,7 @@ def rollback(version_file=None):
         f.write('rollback')
     print(f"  Hot-reload flag set")
 
-    print(f"\n  ✓ Rollback complete. Model will reload on next request.")
-    print("=" * 60)
+    print(f"\n Rollback complete. Model will reload on next request.")
     return True
 
 
